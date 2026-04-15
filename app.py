@@ -4,7 +4,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 
 # --- 1. Page Configuration ---
-st.set_page_config(layout="wide", page_title="AI Inventory Auditor Pro", page_icon="📦")
+st.set_page_config(layout="wide", page_title="Inventory Auditor", page_icon="📦")
 
 # Custom CSS for better UI and Rupee visibility
 st.markdown("""
