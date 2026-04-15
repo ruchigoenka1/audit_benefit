@@ -21,64 +21,87 @@ uploaded_file = st.file_uploader("Upload Inventory Excel File", type=["xlsx"])
 
 if uploaded_file is not None:
     try:
-        # Load the data
         raw_df = pd.read_excel(uploaded_file)
         
-        # DEBUG: Show what the file looks like immediately after upload
-        st.subheader("Step 1: Raw Data Check")
-        st.write("This is what I see in your Excel file:")
-        st.dataframe(raw_df.head(), use_container_width=True)
-
         # Standardize column names
         raw_df.columns = [str(c).strip().title() for c in raw_df.columns]
         
         if 'Day' in raw_df.columns and 'Closing Balance' in raw_df.columns:
             
-            # CRITICAL FIX: Convert 'Day' to datetime and drop rows where Date or Balance is missing
-            raw_df['Day'] = pd.to_datetime(raw_df['Day'], errors='coerce')
-            raw_df = raw_df.dropna(subset=['Day', 'Closing Balance'])
+            # --- SMART AXIS LOGIC ---
+            # Check if the 'Day' column is numeric or date-like
+            first_val = raw_df['Day'].iloc[0]
             
-            # Sort and set index
+            is_date = False
+            try:
+                # If it's already a datetime or a string that looks like a date
+                if isinstance(first_val, (pd.Timestamp, pd.datetime)) or not str(first_val).isdigit():
+                    raw_df['Day'] = pd.to_datetime(raw_df['Day'])
+                    is_date = True
+            except:
+                is_date = False
+
+            # Fill missing sequence
             raw_df = raw_df.sort_values('Day').set_index('Day')
             
-            # Reindex for missing days
-            all_days = pd.date_range(start=raw_df.index.min(), end=raw_df.index.max(), freq='D')
-            df = raw_df.reindex(all_days)
+            if is_date:
+                # Calendar Day Interpolation
+                full_range = pd.date_range(start=raw_df.index.min(), end=raw_df.index.max(), freq='D')
+            else:
+                # Numeric Day Interpolation (1, 2, 3...)
+                full_range = range(int(raw_df.index.min()), int(raw_df.index.max()) + 1)
             
-            # Interpolate
+            df = raw_df.reindex(full_range)
             df['Closing Balance'] = df['Closing Balance'].interpolate(method='linear')
             df = df.reset_index().rename(columns={'index': 'Day'})
 
-            # DEBUG: Show processed data
-            st.subheader("Step 2: Processed Data (Interpolated)")
-            st.write("This is the data being sent to the graph:")
-            st.dataframe(df, use_container_width=True)
+            # --- 3. Evaluations ---
+            min_inv = df['Closing Balance'].min()
+            avg_inv = df['Closing Balance'].mean()
+            annual_holding_cost = (avg_inv * unit_cost) * holding_cost_pct
 
-            # --- 3. Plotting ---
-            if not df.empty:
-                st.subheader("Step 3: Inventory Trend")
-                fig = px.area(df, x='Day', y='Closing Balance', 
-                              title="Daily Inventory Balance",
-                              labels={'Closing Balance': 'Units', 'Day': 'Date'})
-                st.plotly_chart(fig, use_container_width=True)
-                
-                # Calculations
-                min_inv = df['Closing Balance'].min()
-                avg_inv = df['Closing Balance'].mean()
-                
-                st.divider()
-                st.subheader("💰 Impact Analysis")
-                total_red = reduction_qty + (min_inv * reduction_pct)
-                cash_released = total_red * unit_cost
-                
-                c1, c2 = st.columns(2)
-                c1.metric("Min Inventory", f"{min_inv:,.0f}")
-                c2.metric("Cash Released", f"${cash_released:,.2f}")
-            else:
-                st.warning("The processed dataframe is empty. Check your date formats.")
+            # Metrics
+            m1, m2, m3 = st.columns(3)
+            m1.metric("Min Inventory Level", f"{min_inv:,.0f} units")
+            m2.metric("Avg Inventory Level", f"{avg_inv:,.0f} units")
+            m3.metric("Annual Holding Cost", f"${annual_holding_cost:,.2f}")
+
+            # --- 4. Plotting ---
+            xtype = "Date" if is_date else "Day Number"
+            fig = px.area(df, x='Day', y='Closing Balance', 
+                          title=f"Inventory Trend (X-Axis: {xtype})",
+                          labels={'Day': xtype, 'Closing Balance': 'Units'})
+            st.plotly_chart(fig, use_container_width=True)
+
+            # --- 5. Cash Release & What-If ---
+            st.divider()
+            st.subheader("💰 Cash Release & Impact Analysis")
+            
+            total_red = reduction_qty + (min_inv * reduction_pct)
+            total_red = min(total_red, avg_inv) # Cap at average
+            
+            cash_released = total_red * unit_cost
+            new_avg_inv = avg_inv - total_red
+            new_holding_cost = (new_avg_inv * unit_cost) * holding_cost_pct
+            annual_savings = annual_holding_cost - new_holding_cost
+            daily_savings = annual_savings / 365
+            turn_multiplier = (avg_inv / new_avg_inv) if new_avg_inv > 0 else 1.0
+
+            res1, res2, res3 = st.columns(3)
+            with res1:
+                st.info(f"**Cash Released**\n\n# ${cash_released:,.2f}")
+            with res2:
+                st.success(f"**Annual Savings**\n\n# ${annual_savings:,.2f}")
+                st.write(f"Daily: **${daily_savings:,.2f}**")
+            with res3:
+                st.warning(f"**Efficiency Gain**\n\n# {turn_multiplier:.2f}x")
+                st.write("Increase in Turns")
+
+            # Show Dataframe for verification
+            with st.expander("Show Processed Data Table"):
+                st.dataframe(df, use_container_width=True)
 
         else:
-            st.error(f"Column mismatch! Found: {list(raw_df.columns)}. Need: 'Day' and 'Closing Balance'")
-            
+            st.error(f"Columns 'Day' and 'Closing Balance' not found. Found: {list(raw_df.columns)}")
     except Exception as e:
-        st.error(f"Critical Error: {e}")
+        st.error(f"Error: {e}")
