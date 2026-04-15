@@ -2,91 +2,94 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-st.set_page_config(layout="wide", page_title="Inventory Cash Release Tool")
+st.set_page_config(layout="wide", page_title="Inventory Auditor Pro")
 
-st.title("📦 Inventory Auditor & Cash Release Calculator")
+st.title("📦 Inventory Cash Release Auditor")
 
-# --- 1. Sidebar Inputs ---
+# --- 1. Sidebar Parameters ---
 with st.sidebar:
-    st.header("Cost Parameters")
+    st.header("Financial Parameters")
+    unit_cost = st.number_input("Cost per Unit ($)", min_value=0.01, value=10.0)
     holding_cost_pct = st.number_input("Annual Holding Cost (%)", min_value=0.0, value=20.0) / 100
-    ordering_cost = st.number_input("Ordering Cost ($)", min_value=0.0, value=50.0)
     
     st.divider()
-    st.header("Cash Release Simulation")
-    reduction_value = st.number_input("Reduction from Min Inventory (Units)", min_value=0.0, value=0.0)
-    unit_cost = st.number_input("Cost per Unit ($)", min_value=0.1, value=10.0)
+    st.header("Optimization Targets")
+    # User inputs for reduction simulation
+    reduction_qty = st.number_input("Reduction Amount (Units)", min_value=0.0, value=0.0)
+    reduction_pct = st.number_input("Reduction from Min (%)", min_value=0.0, max_value=100.0, value=0.0) / 100
 
-# --- 2. Data Input Section ---
-st.subheader("1. Data Entry")
-col1, col2 = st.columns([1, 2])
+# --- 2. File Upload ---
+uploaded_file = st.file_uploader("Upload Inventory CSV (Columns: Day, Closing Balance)", type=["csv"])
 
-with col1:
-    input_data = st.data_editor(
-        pd.DataFrame([
-            {"Date": pd.Timestamp.now().date(), "Closing Balance": 100},
-            {"Date": (pd.Timestamp.now() + pd.Timedelta(days=5)).date(), "Closing Balance": 150}
-        ]),
-        num_rows="dynamic",
-        use_container_width=True,
-        key="editor"
-    )
-
-if not input_data.empty:
-    # Process the Dataframe
-    df = input_data.copy()
-    df['Date'] = pd.to_datetime(df['Date'])
-    df = df.set_index('Date').sort_index()
+if uploaded_file is not None:
+    # Read and clean data
+    raw_df = pd.read_csv(uploaded_file)
     
-    # Reindex to fill missing days
-    all_days = pd.date_range(start=df.index.min(), end=df.index.max(), freq='D')
-    df = df.reindex(all_days)
+    # Standardize column names to handle potential casing issues
+    raw_df.columns = [c.strip().title() for c in raw_df.columns]
     
-    # Interpolate missing balances (Linear is usually best for trend analysis)
-    df['Closing Balance'] = df['Closing Balance'].interpolate(method='linear')
-    df = df.reset_index().rename(columns={'index': 'Date'})
+    if 'Day' in raw_df.columns and 'Closing Balance' in raw_df.columns:
+        # Convert Day to Datetime
+        raw_df['Day'] = pd.to_datetime(raw_df['Day'])
+        raw_df = raw_df.sort_values('Day').set_index('Day')
+        
+        # Fill missing dates
+        all_days = pd.date_range(start=raw_df.index.min(), end=raw_df.index.max(), freq='D')
+        df = raw_df.reindex(all_days)
+        
+        # Interpolate missing balances
+        df['Closing Balance'] = df['Closing Balance'].interpolate(method='linear')
+        df = df.reset_index().rename(columns={'index': 'Day'})
 
-    # --- 3. Evaluations ---
-    min_inv = df['Closing Balance'].min()
-    avg_inv = df['Closing Balance'].mean()
-    total_value = avg_inv * unit_cost
-    annual_holding_cost = total_value * holding_cost_pct
-    
-    # Calculate Turns (Assuming simplified COGS = Avg Inv * 4 for example, 
-    # but usually requires Sales data. Here we'll use a placeholder ratio.)
-    inventory_turns = 10 # Placeholder baseline
+        # --- 3. Core Evaluations ---
+        min_inv = df['Closing Balance'].min()
+        avg_inv = df['Closing Balance'].mean()
+        
+        # Financials
+        total_value = avg_inv * unit_cost
+        annual_holding_cost = total_value * holding_cost_pct
+        
+        # Metrics Display
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Minimum Inventory Level", f"{min_inv:,.0f} units")
+        m2.metric("Average Inventory Level", f"{avg_inv:,.0f} units")
+        m3.metric("Annual Holding Cost", f"${annual_holding_cost:,.2f}")
 
-    # --- 4. Metrics Display ---
-    m1, m2, m3 = st.columns(3)
-    m1.metric("Min Inventory Level", f"{min_inv:,.0f} units")
-    m2.metric("Avg Inventory Level", f"{avg_inv:,.0f} units")
-    m3.metric("Annual Holding Cost", f"${annual_holding_cost:,.2f}")
+        # --- 4. Plotting ---
+        fig = px.area(df, x='Day', y='Closing Balance', title="Inventory Level Trend", color_discrete_sequence=['#00CC96'])
+        st.plotly_chart(fig, use_container_width=True)
 
-    # --- 5. Plotting ---
-    st.subheader("Inventory Level Over Time")
-    fig = px.line(df, x='Date', y='Closing Balance', title="Daily Inventory Balance")
-    st.plotly_chart(fig, use_container_width=True)
+        # --- 5. Cash Release & What-If Analysis ---
+        st.subheader("💰 Cash Release & Impact Analysis")
+        
+        # Calculate reduction based on user inputs
+        # We calculate reduction from the MINIMUM inventory level as requested
+        total_reduction_units = reduction_qty + (min_inv * reduction_pct)
+        
+        # Results calculation
+        cash_released = total_reduction_units * unit_cost
+        new_avg_inv = max(0, avg_inv - total_reduction_units)
+        new_holding_cost = (new_avg_inv * unit_cost) * holding_cost_pct
+        annual_savings = annual_holding_cost - new_holding_cost
+        daily_savings = annual_savings / 365
+        
+        # Turnover change (Efficiency)
+        # Using a theoretical 'Inventory Turn' ratio (COGS / Avg Inventory)
+        # Assuming COGS is constant, the ratio change is proportional to the average inventory change
+        turn_multiplier = (avg_inv / new_avg_inv) if new_avg_inv > 0 else 1.0
 
-    # --- 6. What-If Analysis (Cash Release) ---
-    st.divider()
-    st.subheader("2. Optimization Impact")
-    
-    # Logic: Reducing Min Inventory reduces the entire baseline (Avg Inventory)
-    new_avg_inv = avg_inv - reduction_value
-    cash_released = reduction_value * unit_cost
-    new_holding_cost = (new_avg_inv * unit_cost) * holding_cost_pct
-    annual_savings = annual_holding_cost - new_holding_cost
-    daily_savings = annual_savings / 365
-    
-    # Impact Metrics
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Cash Released", f"${cash_released:,.2f}", delta="Instant Liquid Cash", delta_color="normal")
-    c2.metric("New Annual Holding Cost", f"${new_holding_cost:,.2f}")
-    c3.metric("Daily Cost Saving", f"${daily_savings:,.2f}", delta="OpEx Reduction")
-    
-    # Turnover calculation (Simplified: Turns increase as Avg Inv decreases)
-    turn_improvement = (avg_inv / new_avg_inv) if new_avg_inv > 0 else 0
-    c4.metric("Inventory Turn Multiplier", f"{turn_improvement:.2fx}", delta="Efficiency Gain")
+        # Display Impact Results
+        res1, res2, res3 = st.columns(3)
+        with res1:
+            st.info(f"**Total Cash Released**\n\n# ${cash_released:,.2f}")
+        with res2:
+            st.success(f"**Annual Holding Savings**\n\n# ${annual_savings:,.2f}")
+            st.write(f"Daily Cost Saving: **${daily_savings:,.2f}**")
+        with res3:
+            st.warning(f"**Efficiency Gain**\n\n# {turn_multiplier:.2f}x")
+            st.write("Increase in Inventory Turns")
 
+    else:
+        st.error("CSV must contain 'Day' and 'Closing Balance' columns.")
 else:
-    st.info("Please enter data in the table above to see analysis.")
+    st.info("Waiting for CSV file upload...")
