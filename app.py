@@ -3,31 +3,46 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-st.set_page_config(layout="wide", page_title="Inventory Auditor Pro")
+# 1. Page Configuration & Custom Styling
+st.set_page_config(layout="wide", page_title="AI Inventory Auditor Pro", page_icon="📦")
 
-st.title("📦 Inventory Cash Release Auditor")
+st.markdown("""
+    <style>
+    .main { background-color: #0e1117; }
+    div[data-testid="stMetricValue"] { font-size: 28px; color: #00d4ff; }
+    div[data-testid="stMetricDelta"] { font-size: 16px; }
+    .stContainer { border: 1px solid #30363d !important; border-radius: 10px; padding: 20px; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- 1. Sidebar Parameters ---
+# 2. Header
+st.title("📦 AI Inventory Auditor Pro")
+st.markdown("### Structural Inventory Audit & Cash Release Simulation")
+st.divider()
+
+# 3. Sidebar Configuration
 with st.sidebar:
-    st.header("Financial Parameters")
-    unit_cost = st.number_input("Cost per Unit (₹)", min_value=0.01, value=10.0)
-    holding_cost_pct = st.number_input("Annual Holding Cost (%)", min_value=0.0, value=20.0) / 100
-    
-    st.divider()
-    st.header("Optimization Targets")
-    reduction_qty = st.number_input("Fixed Unit Reduction", min_value=0.0, value=0.0)
-    reduction_pct = st.number_input("Reduction from Min (%)", min_value=0.0, max_value=100.0, value=0.0) / 100
+    st.header("⚙️ Configuration")
+    with st.expander("Cost Settings", expanded=True):
+        unit_cost = st.number_input("Unit Cost (₹)", min_value=1.0, value=100.0, step=10.0)
+        holding_cost_pct = st.number_input("Annual Holding Cost (%)", min_value=0.0, value=18.0, step=0.5) / 100
+        ordering_cost = st.number_input("Ordering Cost (₹)", min_value=0.0, value=500.0)
 
-# --- 2. File Upload ---
-uploaded_file = st.file_uploader("Upload Inventory Excel File", type=["xlsx"])
+    st.header("🎯 What-If Targets")
+    st.info("Simulate reducing stock levels from the current floor (Minimum Inventory).")
+    red_qty = st.number_input("Cut Fixed Units", min_value=0.0, value=0.0, step=10.0)
+    red_pct = st.number_input("Cut % from Min", min_value=0.0, max_value=100.0, value=10.0, step=1.0) / 100
 
-if uploaded_file is not None:
+# 4. Data Engine
+uploaded_file = st.file_uploader("Upload Inventory XLSX (Columns: Day, Closing Balance)", type=["xlsx"])
+
+if uploaded_file:
     try:
         raw_df = pd.read_excel(uploaded_file)
         raw_df.columns = [str(c).strip().title() for c in raw_df.columns]
         
         if 'Day' in raw_df.columns and 'Closing Balance' in raw_df.columns:
-            # Smart Axis Logic
+            # Smart Logic: Identify if X-axis is Dates or integers
             first_val = raw_df['Day'].iloc[0]
             is_date = not str(first_val).isdigit()
             if is_date:
@@ -35,72 +50,83 @@ if uploaded_file is not None:
 
             raw_df = raw_df.sort_values('Day').set_index('Day')
             
-            # Reindex and Forward Fill
+            # Fill Gaps using Forward Fill (Realistic for inventory)
             if is_date:
                 full_range = pd.date_range(start=raw_df.index.min(), end=raw_df.index.max(), freq='D')
             else:
                 full_range = range(int(raw_df.index.min()), int(raw_df.index.max()) + 1)
             
-            df = raw_df.reindex(full_range)
-            df['Closing Balance'] = df['Closing Balance'].ffill()
-            df = df.reset_index().rename(columns={'index': 'Day'})
+            df = raw_df.reindex(full_range).ffill().reset_index().rename(columns={'index': 'Day'})
 
-            # --- 3. Evaluations (Historical vs Proposed) ---
+            # --- 5. Calculation Engine ---
             min_inv = df['Closing Balance'].min()
-            
-            # Historical Stats
+            max_inv = df['Closing Balance'].max()
             hist_avg_inv = df['Closing Balance'].mean()
-            hist_holding_cost = (hist_avg_inv * unit_cost) * holding_cost_pct
-            
-            # Proposed Stats
-            total_red_units = reduction_qty + (min_inv * reduction_pct)
-            df['Proposed Balance'] = (df['Closing Balance'] - total_red_units).clip(lower=0)
-            
-            prop_avg_inv = df['Proposed Balance'].mean()
-            prop_holding_cost = (prop_avg_inv * unit_cost) * holding_cost_pct
-            
-            # Impact Metrics
-            cash_released = total_red_units * unit_cost
-            annual_savings = hist_holding_cost - prop_holding_cost
-            
-            # Efficiency (Turns) - using 1.0 as base for comparison
-            hist_turn = 1.0 
-            prop_turn = (hist_avg_inv / prop_avg_inv) if prop_avg_inv > 0 else 1.0
+            hist_holding_total = (hist_avg_inv * unit_cost) * holding_cost_pct
 
-            # --- 4. Comparison Plot ---
-            st.subheader("Inventory Trend: Current vs. Proposed")
+            # New Scenario
+            reduction_target = red_qty + (min_inv * red_pct)
+            df['Proposed'] = (df['Closing Balance'] - reduction_target).clip(lower=0)
+            
+            prop_avg_inv = df['Proposed'].mean()
+            prop_holding_total = (prop_avg_inv * unit_cost) * holding_cost_pct
+            
+            # KPI Deltas
+            cash_released = reduction_target * unit_cost
+            annual_savings = hist_holding_total - prop_holding_total
+            turn_improvement = (hist_avg_inv / prop_avg_inv) if prop_avg_inv > 0 else 1.0
+
+            # --- 6. Visual Dashboard ---
+            # Top Row: Benchmarks
+            st.subheader("📊 Baseline Benchmarks (Historical)")
+            b1, b2, b3, b4 = st.columns(4)
+            b1.metric("Min Inventory", f"{min_inv:,.0f} U")
+            b2.metric("Max Inventory", f"{max_inv:,.0f} U")
+            b3.metric("Avg Inventory", f"{hist_avg_inv:,.0f} U")
+            b4.metric("Avg Value", f"₹{hist_avg_inv * unit_cost:,.0f}")
+
+            # Plotting
+            st.subheader("📈 Inventory Level Comparison")
             fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df['Day'], y=df['Closing Balance'], mode='lines', name='Historical', line=dict(color='#636EFA'), fill='tozeroy'))
-            fig.add_trace(go.Scatter(x=df['Day'], y=df['Proposed Balance'], mode='lines', name='Proposed', line=dict(color='#EF553B', dash='dot'), fill='tonexty'))
-            fig.add_hline(y=min_inv, line_dash="dash", line_color="green", annotation_text=f"Min: {min_inv}")
-            fig.update_layout(xaxis_title="Timeline", yaxis_title="Units", template="plotly_dark")
+            fig.add_trace(go.Scatter(x=df['Day'], y=df['Closing Balance'], name='Historical', line=dict(color='#00d4ff', width=2), fill='tozeroy'))
+            fig.add_trace(go.Scatter(x=df['Day'], y=df['Proposed'], name='Optimized', line=dict(color='#ff4b4b', width=2, dash='dot'), fill='tonexty'))
+            fig.add_hline(y=min_inv, line_dash="dash", line_color="#2ecc71", annotation_text="Safety Floor")
+            fig.update_layout(template="plotly_dark", hovermode="x unified", height=500, margin=dict(l=0, r=0, t=30, b=0))
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 5. Enhanced KPI Analysis (Historical | Proposed | Saving) ---
+            # --- 7. Strategic Impact Row ---
             st.divider()
-            st.subheader("💰 Cash Release & Impact Analysis")
+            st.subheader("💡 Strategic Impact Report")
             
-            col1, col2, col3 = st.columns(3)
+            c1, c2, c3 = st.columns(3)
+            with c1:
+                with st.container(border=True):
+                    st.write("**LIQUIDITY GAIN**")
+                    st.metric("Immediate Cash Released", f"₹{cash_released:,.2f}", delta="Instant ROI")
+                    st.write(f"Old Value: ₹{hist_avg_inv * unit_cost:,.0f}")
+                    st.write(f"New Value: ₹{prop_avg_inv * unit_cost:,.0f}")
 
-            with col1:
-                st.write("**Inventory Investment**")
-                st.metric("Cash Released", f"₹{cash_released:,.2f}", delta="Instant Liquid Cash", delta_color="normal")
-                st.caption(f"Historical Value: ₹{hist_avg_inv * unit_cost:,.0f}")
-                st.caption(f"New Scenario Value: ₹{prop_avg_inv * unit_cost:,.0f}")
+            with c2:
+                with st.container(border=True):
+                    st.write("**COST REDUCTION**")
+                    st.metric("Annual Holding Saving", f"₹{annual_savings:,.2f}", delta=f"₹{annual_savings/365:,.2f} / day")
+                    st.write(f"Old Cost: ₹{hist_holding_total:,.2f}")
+                    st.write(f"New Cost: ₹{prop_holding_total:,.2f}")
 
-            with col2:
-                st.write("**Annual Holding Cost**")
-                st.metric("Total Saving", f"₹{annual_savings:,.2f}", delta=f"₹{annual_savings/365:,.2f} / day")
-                st.caption(f"Historical Cost: ₹{hist_holding_cost:,.2f}")
-                st.caption(f"New Scenario Cost: ₹{prop_holding_cost:,.2f}")
+            with c3:
+                with st.container(border=True):
+                    st.write("**EFFICIENCY MULTIPLIER**")
+                    st.metric("Inventory Turns", f"{turn_improvement:.2f}x", delta=f"{(turn_improvement-1)*100:.1f}% Leaner")
+                    st.write("Base Index: 1.00x")
+                    st.write(f"New Efficiency: {turn_improvement:.2f}x")
 
-            with col3:
-                st.write("**Efficiency (Inventory Turns)**")
-                st.metric("Turn Improvement", f"{prop_turn:.2f}x", delta=f"{(prop_turn - 1)*100:.1f}% Increase")
-                st.caption(f"Historical Turns: {hist_turn:.2f}x")
-                st.caption(f"New Scenario Turns: {prop_turn:.2f}x")
+            # Data Preview
+            with st.expander("🔍 Audit Trail (Data Table)"):
+                st.dataframe(df.style.format({"Closing Balance": "{:,.0f}", "Proposed": "{:,.0f}"}), use_container_width=True)
 
         else:
-            st.error("Please ensure columns are 'Day' and 'Closing Balance'.")
+            st.error("Error: The file must contain 'Day' and 'Closing Balance' columns.")
     except Exception as e:
-        st.error(f"Error: {e}")
+        st.error(f"Processing Error: {e}")
+else:
+    st.info("Please upload an inventory Excel file to generate the structural audit.")
